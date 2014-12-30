@@ -15,6 +15,6 @@ How to use the script:
 
 5) Select a heightmap (density map optional)
 
-5) Select the other options (Divisions is a good start)
+6) Select the other options (Divisions is a good start)
 
-6) Click "Generate"
+7) Click "Generate"
