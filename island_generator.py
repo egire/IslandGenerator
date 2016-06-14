@@ -1,8 +1,8 @@
 #
-# Island Generator.py - Generates islands using displacement and density maps (Maya 2015)
+# Island Generator.py - Generates islands using displacement and density maps (Maya 2015/Windows 7)
 #
 # The MIT License (MIT)
-# Copyright (c) 2014 Eric Gire
+# Copyright (c) 2016 Eric Gire
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -45,9 +45,9 @@ def generate_island():
     # Ocean options
     ocean_level_offset = cmds.floatSliderGrp( 'ui_ocean_level_offset', q = True, v = True )
     
-    # Civilzation options
-    num_civilizations = cmds.intField( 'ui_num_civilizations', q = True, v = True )
-    max_civ_population = cmds.intField( 'ui_max_civ_population', q = True, v = True ) 
+    # Civilization options
+    civ_map = cmds.textField( 'ui_civmap', q = True, tx = True )
+    civ_density_bias = cmds.floatField( 'ui_civ_density_bias', q = True, v = True )
     
     # Layer options
     generate_ocean_layer = cmds.checkBox( 'ui_generate_ocean', q = True, v = True )
@@ -59,7 +59,7 @@ def generate_island():
     
     # TODO: Put all vars here
     if generate_flora_layer : flora = generate_flora( density_map, terrain, flora_density_bias, [flora_x_jitter, flora_z_jitter] )
-    if generate_civil_layer : civil = generate_civilization( terrain, num_civilizations, max_civ_population, absolute_ocean_level )
+    if generate_civil_layer : civil = generate_civilization( civ_map, terrain, civ_density_bias )
     if generate_ocean_layer : ocean = generate_ocean( island_width, absolute_ocean_level )
     
 def get_heightmap():
@@ -76,10 +76,13 @@ def get_densitymap():
     cmds.textField( 'ui_densitymap', e = True, tx = densitymap[0] )
     icon = create_icon( densitymap[0], (300, 300) )
     cmds.symbolButton( 'ui_densitymap_preview', e=True, image = icon, ann = icon, h = 300 )
-
-def ui_state_civs( enabled = True ):
-    cmds.intField( 'ui_num_civilizations', edit = True, enable = enabled )
-    cmds.intField( 'ui_max_civ_population', edit = True, enable = enabled )
+    
+def get_civmap():
+    imageFilter = "Images (*.jpg *.jpeg *.png *.tiff *.tif *.psd)"
+    civmap = cmds.fileDialog2( fileMode=1, fileFilter=imageFilter, dialogStyle=2, cap = "Select Civmap..." )
+    cmds.textField( 'ui_civmap', e = True, tx = civmap[0] )
+    icon = create_icon( civmap[0], (300, 300) )
+    cmds.symbolButton( 'ui_civmap_preview', e=True, image = icon, ann = icon, h = 300 )
     
 def ui_state_flora( enabled = True ):
     cmds.symbolButton( 'ui_densitymap_preview', edit = True, enable = enabled )
@@ -87,6 +90,11 @@ def ui_state_flora( enabled = True ):
     cmds.floatField( 'ui_flora_density_bias', edit = True, enable = enabled )
     cmds.floatField( 'ui_flora_x_jitter', edit = True, enable = enabled )
     cmds.floatField( 'ui_flora_z_jitter', edit = True, enable = enabled )
+    
+def ui_state_civs( enabled = True ):
+    cmds.symbolButton( 'ui_civmap_preview', edit = True, enable = enabled )
+    cmds.button( 'ui_cm_browse', edit = True, enable = enabled )
+    cmds.floatField( 'ui_civ_density_bias', edit = True, enable = enabled )
 
 def ui_state_ocean( enabled = True ):
     cmds.floatSliderGrp( 'ui_ocean_level_offset', edit = True, enable = enabled )
@@ -123,46 +131,6 @@ def generate_ocean( width = 10, ocean_level = 0.0 ):
     
     return ocean[0]
 
-def generate_civilization( terrain = '', max_civs = 1, max_pop = 10, water_level = 0.0 ):   
-    terrain_smooth = terrain + '_smooth'
-    
-    plane_width = cmds.polyPlane(terrain, q = True, w = True)
-    plane_divisions = cmds.polyPlane(terrain, q = True, sx = True)
-    civilizations = []
-    
-    locations = locations_above_water( terrain, water_level )
-    
-    # Terrain is not above the water, so early exit
-    if not locations:
-        return
-    
-    for x in xrange( max_civs ):
-        structures = []
-        
-        rand_pop = random.randint( 2, max_pop )
-        rand_index = random.randint( 0, len(locations) )
-        rand_pos = locations.pop( (rand_index + int( plane_width ) ) % len( locations ) )
-        street_spacing = 0.1
-        
-        map = ViralMap( rand_pop )
-        map.generate_nodes()
-        map.infect_nodes( Generators.rand() )
-        
-        for node in map:
-            cmds.refresh()
-            
-            if node.is_infected():
-                node_loc = node.get_location()
-                structure = cmds.duplicate( 'Structure' )
-                house_pos = [ node_loc[0] * street_spacing * max_pop + rand_pos[0],\
-                                    node_loc[2] * street_spacing * max_pop + rand_pos[2] ]
-                mesh_place_object( structure, terrain_smooth, house_pos )
-                cmds.move( 0, -0.005, 0, r = True )
-                structures += structure
-        if structures: civilizations += [ cmds.group( structures, n = 'Civilization' ) ]
-        
-    return cmds.group( civilizations, n = 'Civilizations' )
-
 def locations_above_water( terrain, water_level ):
     plane_width = int( cmds.polyPlane(terrain, q = True, w = True) )
     mid_point = plane_width / 2.0
@@ -173,6 +141,42 @@ def locations_above_water( terrain, water_level ):
             if point[1] >= water_level:
                 points.append( point )
     return points
+
+def generate_civilization( civ_map = '', terrain = '', bias = 0.95 ):
+    terrain_smooth = terrain + '_smooth'
+    
+    cm = create_file_texture( civ_map )
+    
+    cm_dims = cmds.getAttr( cm + '.outSize' )
+    cm_dims = cm_dims[0]
+    
+    plane_width = cmds.polyPlane( terrain, q = True, w = True )
+    plane_divisions = cmds.polyPlane( terrain, q = True, h = True )
+    
+    houses = []
+    for y in xrange( 32, int( cm_dims[1] ), 32 ):
+        for x in xrange( 32,  int( cm_dims[0] ), 32 ):
+            place_house = True
+            pixel = None
+            house_dim = 16
+            for j in xrange(0, house_dim):
+                for i in xrange(0, house_dim):
+                    pixel = cmds.colorAtPoint( cm, o = 'RGB', u = float(x+i) / cm_dims[0], v = float(y+j) / cm_dims[1] )[0]
+                    if ( pixel <= 0.001 ):
+                        place_house = False
+                        break
+            #place house if no black pixel found 
+            if ( place_house and randIntNorm( pixel, cm_dims[0] - ( bias * cm_dims[0] ) ) ):           
+                house = cmds.duplicate( 'House' )
+                surface_point = [ float(x) / cm_dims[0] * plane_width - plane_width / 2.0,\
+                                    -1.0*(float(y) / cm_dims[1] * plane_width - plane_width / 2.0) ]
+                mesh_place_object( house, terrain_smooth, surface_point )
+                mesh_orient_object( house, terrain_smooth, surface_point )
+    
+                houses += house
+                cmds.refresh()
+
+    return cmds.group( houses, n = 'Civilizations' )
 
 def generate_flora( density_map = '', terrain = '', bias = 0.95, flora_jitter = [0.0, 0.0] ):
     terrain_smooth = terrain + '_smooth'
@@ -190,7 +194,7 @@ def generate_flora( density_map = '', terrain = '', bias = 0.95, flora_jitter = 
         cmds.refresh()
         for x in xrange( int( dm_dims[0] ) ):
             pixel = cmds.colorAtPoint( dm, o = 'RGB', u = float(x) / dm_dims[0], v = float(y) / dm_dims[1] )
-            if randIntNorm( pixel[0], dm_dims[0] - ( bias * dm_dims[0] ) ):
+            if ( randIntNorm( pixel[0], dm_dims[0] - ( bias * dm_dims[0] ) ) ):
                 tree = cmds.duplicate( 'Tree' )
                 jitter = [ random.uniform(-flora_jitter[0], flora_jitter[0]),\
                             random.uniform(-flora_jitter[1], flora_jitter[1]) ]
@@ -202,17 +206,47 @@ def generate_flora( density_map = '', terrain = '', bias = 0.95, flora_jitter = 
 
     return cmds.group( trees, n = 'Flora' )
 
+def mesh_face( mesh, pos = [ 0, 0 ] ):
+    mFnMesh = get_OM_mesh( mesh )
+    
+    surface_point = om.MFloatPoint()
+    found_face = False
+    
+    face_util = om.MScriptUtil()
+    face_util.createFromInt(-1)
+    face_ptr = face_util.asIntPtr()
+    
+    # Use Maya API to cast ray from remote location to target mesh,
+    # return the face id of the hit point
+    try:
+        found_face = mFnMeshTarget.closestIntersection(
+                    om.MFloatPoint( pos[0], 1000.0, pos[1] ),
+        			om.MFloatVector( 0.0, -1.0, 0.0 ),
+        			None, None,
+        			False,
+        			om.MSpace.kWorld,
+        			100000.0,
+        			False,
+        			None,
+        			surface_point,
+        			None, face_ptr, None, None, None, 
+        			1**-10)
+    except:
+        print 'Error in intersection'
+        pass
+    # Valid face?
+    if found_face:
+        return face_util.getInt(face_ptr)
+    else:
+        return None
+    
 def mesh_point( mesh, pos = [ 0, 0 ] ):
     # Filter selection to kMesh
-    selection = om.MSelectionList()
-    selection.clear()
-    dag = om.MDagPath()
-    selection.add( mesh )
-    selection.getDagPath( 0, dag )
-    mFnMeshTarget  = om.MFnMesh( dag )
-
+    mFnMesh = get_OM_mesh( mesh )
+    
     surface_point = om.MFloatPoint()
     found_point = False
+    
     # Use Maya API to cast ray from remote location to target mesh,
     # return the location of the hit position as a point on the surface
     try:
@@ -231,7 +265,7 @@ def mesh_point( mesh, pos = [ 0, 0 ] ):
     except:
         print 'Error in intersection'
         pass
-    # Did the ray hit the surface and return a valid point?
+    # Valid point?
     if found_point:
         return ( surface_point[0], surface_point[1], surface_point[2] )
     else:
@@ -241,6 +275,34 @@ def mesh_place_object( object, mesh, pos = [ 0, 0 ] ):
     cmds.select( object )
     surface_point = mesh_point( mesh, pos )
     cmds.move( surface_point[0], surface_point[1], surface_point[2] )
+    
+def mesh_orient_object( object, mesh, pos = [ 0, 0 ] ):
+    cmds.select( object )
+    face = mesh_face( mesh, pos )
+    norm = face_norm( mesh, face )
+    norm = (norm.x, norm.y, norm.z)
+    up = (0.0, 1.0, 0.0)
+    rotation = cmds.angleBetween(er=True, v1=up, v2=norm)
+    cmds.rotate( rotation[0], rotation[1], rotation[2] )
+
+def face_norm( mesh, faceid ):
+    mFnMesh = get_OM_mesh( mesh )
+    
+    norms = om.MFloatVectorArray()
+    
+    mFnMesh.getFaceVertexNormals( faceid, norms, om.MSpace.kObject )
+    
+    return norms[0]
+
+def get_OM_mesh( object ):
+    # Filter selection to kMesh
+    selection = om.MSelectionList()
+    selection.clear()   
+    dag = om.MDagPath()
+    selection.add( object )
+    selection.getDagPath( 0, dag )
+    
+    return om.MFnMesh( dag )
 
 def apply_shader( shader = '', objects = '' ):
     if not ( object or shader ):
@@ -276,7 +338,7 @@ def randIntNorm( magnitude = 1.0, scalar = 1.0 ):
     return not random.randint( 0, int( (1.0 - magnitude) * scalar ) )
 
 def create_icon( image_file, icon_size = (32, 32), icons_folder = os.environ['XBMLANGPATH'].split(';')[0] ):
-    '''Creates an icon using an image file and specified dimensions, 
+    '''Creates an icon using an image file with specified dimensions, 
         and places it into the specified icon folder, outputting the icon name.'''
     
     image_name = os.path.basename( image_file ).split( '.' )[0] # Image name
@@ -290,97 +352,6 @@ def create_icon( image_file, icon_size = (32, 32), icons_folder = os.environ['XB
     
     return image_name                             # Output icon name
 
-class ViralMap(object):
-
-    class Node:
-        def __init__( self, location = [0, 0, 0], infected = False ):
-            self.__location = location
-            self.__infected = infected
-        
-        def get_location( self ):
-            return self.__location
-        
-        def set_location( self, location ):
-            self.__location = location
-        
-        def is_infected( self ):
-            return self.__infected
-            
-        def infect( self ):
-            self.__infected = True
-            
-        def cure( self ):
-            self.__infected = False
-            
-        def __str__( self ):
-            return "Node " + str( self.__location ) + ", Infected: " + str( self.__infected )
-
-    def __init__( self, max_nodes = 10 ):
-        self.__max_nodes = max_nodes
-        self.__nodes = dict()
-        self.__connection_maxtix = list()
-        
-    def get_max_nodes( self ):
-        return self.__max_nodes
-        
-    def generate_nodes(self):
-        if len(self.__nodes) >= self.__max_nodes:
-            return
-        
-        randomPoint = self.__random_unique_point()
-        self.add_node( self.Node(randomPoint) )
-        self.generate_nodes()
-    
-    def __random_unique_point(self):
-        randomPoint = (random.random(), random.random(), random.random())
-        
-        if randomPoint not in self.__nodes.keys() or randomPoint is not None:
-            return randomPoint
-        
-        self.__random_unique_point()
-    
-    def add_node(self, node):
-        if node.get_location() not in self.__nodes.keys():
-            self.__nodes[node.get_location()] = node
-        
-    def remove_node(self, node):
-        if node.get_location() not in self.__nodes.keys():
-            del self.__nodes[node.get_location()]
-    
-    def find_node(self, node):
-        return self.__nodes[node.get_location()]
-    
-    def patient_zero(self):
-        zero = random.randint(0, len(self))
-        nodes = self.__nodes.keys()
-        self.__nodes[nodes[zero]]
-    
-    def spread_infection(self):
-        #TODO: Allow infection to spread to adjacent nodes
-        raise ValueError("Function not implemented.")
-        
-    def infect_nodes(self, algo):
-        for node in self:
-            if algo.next():
-                node.infect()
-    
-    def cure_nodes(self, algo):
-        for node in self:
-            if algo.next():
-                node.cure()
-    
-    def __len__(self):
-        return len(self.__nodes.keys())
-    
-    def __iter__(self):
-        for k in self.__nodes:
-            yield self.__nodes[k]
-    
-    def __str__(self):
-        s = ''
-        for node in self:
-            s += str(node) + '\n'
-        return s
 
 class Generators:
     '''Provides methods to generate random numbers'''
@@ -446,11 +417,11 @@ cmds.setParent( '..' )
 cmds.separator( h = 5, st = 'none' )
 cmds.rowColumnLayout( nc = 2 )
 cmds.text( label='Width: ', align='left' )
-cmds.intField( 'ui_island_width', min = 1, max = 512, s = 10, v = 100, width = 50 )
+cmds.intField( 'ui_island_width', min = 1, max = 1024, s = 10, v = 10, width = 50 )
 cmds.text( label='Height: ', align='left' )
-cmds.intField( 'ui_island_height', min = 1, s = 512, v = 10, width = 50 )
+cmds.intField( 'ui_island_height', min = 0, s = 1024, v = 1, width = 50 )
 cmds.text( label='Divisions: ', align='left' )
-cmds.intField( 'ui_island_divisions', min = 0, max = 1000, s = 10, v = 10, width = 50 )
+cmds.intField( 'ui_island_divisions', min = 0, max = 1000, s = 10, v = 1, width = 50 )
 cmds.setParent( '..' )
 cmds.setParent( '..' )
 cmds.setParent( '..' )
@@ -461,7 +432,7 @@ cmds.separator( h = 8, st = 'none' )
 cmds.frameLayout( label = 'Flora Options', borderStyle = 'in', cll = True )
 cmds.rowColumnLayout( nc = 2 )
 cmds.text( label='Flora Active: ', align='left' )
-cmds.checkBox( 'ui_generate_flora', v = True, label='', offCommand = 'ui_state_flora( False )', onCommand = 'ui_state_flora( True )', align='left' )
+cmds.checkBox( 'ui_generate_flora', v = False, label='', offCommand = 'ui_state_flora( False )', onCommand = 'ui_state_flora( True )', align='left' )
 cmds.setParent( '..' )
 # Density Map Start
 cmds.columnLayout()
@@ -486,31 +457,39 @@ cmds.setParent( '..' )
 
 cmds.separator( h = 8, st = 'none' )
 
-# Ocean
-cmds.frameLayout( label = 'Ocean Options', borderStyle = 'in', cll = True )
-cmds.rowColumnLayout( nc = 2 )
-cmds.text( label='Ocean Active: ', align='left' )
-cmds.checkBox( 'ui_generate_ocean', value = True, label='', offCommand = 'ui_state_ocean( False )', onCommand = 'ui_state_ocean( True )' )
-cmds.setParent( '..' )
-cmds.rowColumnLayout( nc = 2 )
-cmds.text( label='Level Offset: ', align='left' )
-cmds.floatSliderGrp( 'ui_ocean_level_offset', min = -0.1, max = 1.0, s = 0.01, v = 0.50, field = True, width = 200 )
-cmds.setParent( '..' )
-cmds.setParent( '..' )
-
-cmds.separator( h = 8, st = 'none' )
-
 # Civilization
 cmds.frameLayout( label = 'Civilization Options', borderStyle = 'in', cll = True )
 cmds.rowColumnLayout( nc = 2 )
 cmds.text( label='Civilizations Active: ', align='left' )
 cmds.checkBox( 'ui_generate_civil', v = True, label='', offCommand = 'ui_state_civs( False )', onCommand = 'ui_state_civs( True )' )
 cmds.setParent( '..' )
+# Civ Map Start
+cmds.columnLayout()
+cmds.text( label='Civ Map', align='center', w = 300 )
+cmds.symbolButton( 'ui_civmap_preview', w = 300 )
 cmds.rowColumnLayout( nc = 2 )
-cmds.text( label='Number of civilizations: ', align='left' )
-cmds.intField( 'ui_num_civilizations', min = 0, max = 100, step = 1, value = 10, width = 50 )
-cmds.text( label='Civilization Population Max: ', align='left' )
-cmds.intField( 'ui_max_civ_population', min = 1, max = 100, s = 20, value = 12, width = 50 )
+cmds.textField( 'ui_civmap', tx = 'Browse for civmap...', w = 250, ed = False )
+cmds.button( 'ui_cm_browse', l='Browse...', command = 'get_civmap()' )
+cmds.setParent( '..' )
+# Civ Map End
+cmds.rowColumnLayout( nc = 2 )
+cmds.text( label='Density Bias: ', align='left' )
+cmds.floatField( 'ui_civ_density_bias', min = 0.0, max = 1.0, s = 0.10, v = 0.95, width = 50 )
+cmds.setParent( '..' )
+cmds.setParent( '..' )
+cmds.setParent( '..' )
+
+cmds.separator( h = 8, st = 'none' )
+
+# Ocean
+cmds.frameLayout( label = 'Ocean Options', borderStyle = 'in', cll = True )
+cmds.rowColumnLayout( nc = 2 )
+cmds.text( label='Ocean Active: ', align='left' )
+cmds.checkBox( 'ui_generate_ocean', value = False, label='', offCommand = 'ui_state_ocean( False )', onCommand = 'ui_state_ocean( True )' )
+cmds.setParent( '..' )
+cmds.rowColumnLayout( nc = 2 )
+cmds.text( label='Level Offset: ', align='left' )
+cmds.floatSliderGrp( 'ui_ocean_level_offset', min = -0.1, max = 1.0, s = 0.01, v = 0.50, field = True, width = 200 )
 cmds.setParent( '..' )
 cmds.setParent( '..' )
 
