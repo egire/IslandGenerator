@@ -171,7 +171,6 @@ def generate_civilization( civ_map = '', terrain = '', bias = 0.95 ):
                 surface_point = [ float(x) / cm_dims[0] * plane_width - plane_width / 2.0,\
                                     -1.0*(float(y) / cm_dims[1] * plane_width - plane_width / 2.0) ]
                 mesh_place_object( house, terrain_smooth, surface_point )
-                mesh_orient_object( house, terrain_smooth, surface_point )
     
                 houses += house
                 cmds.refresh()
@@ -206,11 +205,11 @@ def generate_flora( density_map = '', terrain = '', bias = 0.95, flora_jitter = 
 
     return cmds.group( trees, n = 'Flora' )
 
-def mesh_face( mesh, pos = [ 0, 0 ] ):
+def mesh_intersect( mesh, pos = [ 0, 0 ] ):
     mFnMesh = get_OM_mesh( mesh )
     
     surface_point = om.MFloatPoint()
-    found_face = False
+    hit = False
     
     face_util = om.MScriptUtil()
     face_util.createFromInt(-1)
@@ -219,7 +218,7 @@ def mesh_face( mesh, pos = [ 0, 0 ] ):
     # Use Maya API to cast ray from remote location to target mesh,
     # return the face id of the hit point
     try:
-        found_face = mFnMeshTarget.closestIntersection(
+        hit = mFnMesh.closestIntersection(
                     om.MFloatPoint( pos[0], 1000.0, pos[1] ),
         			om.MFloatVector( 0.0, -1.0, 0.0 ),
         			None, None,
@@ -234,51 +233,21 @@ def mesh_face( mesh, pos = [ 0, 0 ] ):
     except:
         print 'Error in intersection'
         pass
-    # Valid face?
-    if found_face:
-        return face_util.getInt(face_ptr)
+    # Intersection occur?
+    if hit:
+        return (surface_point, face_util.getInt(face_ptr))
     else:
         return None
-    
-def mesh_point( mesh, pos = [ 0, 0 ] ):
-    # Filter selection to kMesh
-    mFnMesh = get_OM_mesh( mesh )
-    
-    surface_point = om.MFloatPoint()
-    found_point = False
-    
-    # Use Maya API to cast ray from remote location to target mesh,
-    # return the location of the hit position as a point on the surface
-    try:
-        found_point = mFnMeshTarget.closestIntersection(
-                    om.MFloatPoint( pos[0], 1000.0, pos[1] ),
-        			om.MFloatVector( 0.0, -1.0, 0.0 ),
-        			None, None,
-        			False,
-        			om.MSpace.kWorld,
-        			100000.0,
-        			False,
-        			None,
-        			surface_point,
-        			None, None, None, None, None, 
-        			1**-10)
-    except:
-        print 'Error in intersection'
-        pass
-    # Valid point?
-    if found_point:
-        return ( surface_point[0], surface_point[1], surface_point[2] )
-    else:
-        return ( 0, 0, 0 )
 
-def mesh_place_object( object, mesh, pos = [ 0, 0 ] ):
+def mesh_place_object( object, mesh, pos = [ 0, 0 ], orient = True ):
     cmds.select( object )
-    surface_point = mesh_point( mesh, pos )
-    cmds.move( surface_point[0], surface_point[1], surface_point[2] )
+    intersect = mesh_intersect( mesh, pos )
+    cmds.move( intersect[0][0], intersect[0][1], intersect[0][2] )
     
-def mesh_orient_object( object, mesh, pos = [ 0, 0 ] ):
-    cmds.select( object )
-    face = mesh_face( mesh, pos )
+    if ( orient ):
+        face_orient_object( object, mesh, intersect[1] )
+    
+def face_orient_object( object, mesh, face ):
     norm = face_norm( mesh, face )
     norm = (norm.x, norm.y, norm.z)
     up = (0.0, 1.0, 0.0)
@@ -286,7 +255,12 @@ def mesh_orient_object( object, mesh, pos = [ 0, 0 ] ):
     cmds.rotate( rotation[0], rotation[1], rotation[2] )
 
 def face_norm( mesh, faceid ):
-    mFnMesh = get_OM_mesh( mesh )
+    selection = om.MSelectionList()
+    selection.clear()
+    dag = om.MDagPath()
+    selection.add( mesh )
+    selection.getDagPath( 0, dag )
+    mFnMesh = om.MFnMesh( dag )
     
     norms = om.MFloatVectorArray()
     
@@ -294,12 +268,12 @@ def face_norm( mesh, faceid ):
     
     return norms[0]
 
-def get_OM_mesh( object ):
+def get_OM_mesh( mesh ):
     # Filter selection to kMesh
     selection = om.MSelectionList()
     selection.clear()   
     dag = om.MDagPath()
-    selection.add( object )
+    selection.add( mesh )
     selection.getDagPath( 0, dag )
     
     return om.MFnMesh( dag )
@@ -352,50 +326,6 @@ def create_icon( image_file, icon_size = (32, 32), icons_folder = os.environ['XB
     
     return image_name                             # Output icon name
 
-
-class Generators:
-    '''Provides methods to generate random numbers'''
-    
-    @staticmethod
-    def rand():
-        while True:
-            yield random.getrandbits(1)
-
-    @staticmethod
-    def cos():
-        for x in xrange(sys.maxint):
-            yield math.floor(math.cos(x))
-
-    @staticmethod
-    def tan():
-        for x in xrange(sys.maxint):
-            yield math.floor(math.tan(x))
-
-    @staticmethod 
-    def sin():
-        for x in xrange(sys.maxint):
-            yield math.floor(math.sin(x))
-            
-    @staticmethod
-    def mod(i):
-        for x in xrange(sys.maxint):
-            yield not x % i
-            
-    @staticmethod
-    def triangle(low, high, mode):
-        while True:
-            yield not math.floor(random.triangular(low, high, mode))
-            
-    @staticmethod  
-    def const(x):
-        while True:
-            yield x
-
-    @staticmethod
-    def integer(max):
-        while True:
-            yield not random.randint(0, max-1)
-
 # UI Start
 ui_window = cmds.window( title = 'Island Generator', wh = (330, 630), s=False )
 cmds.scrollLayout()
@@ -421,7 +351,7 @@ cmds.intField( 'ui_island_width', min = 1, max = 1024, s = 10, v = 10, width = 5
 cmds.text( label='Height: ', align='left' )
 cmds.intField( 'ui_island_height', min = 0, s = 1024, v = 1, width = 50 )
 cmds.text( label='Divisions: ', align='left' )
-cmds.intField( 'ui_island_divisions', min = 0, max = 1000, s = 10, v = 1, width = 50 )
+cmds.intField( 'ui_island_divisions', min = 0, max = 1000, s = 10, v = 50, width = 50 )
 cmds.setParent( '..' )
 cmds.setParent( '..' )
 cmds.setParent( '..' )
